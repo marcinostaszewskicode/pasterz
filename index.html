@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Pasterz – poziom 1</title>
+    <style>
+      :root {
+        --bg: #eef3e8;
+        --fg: #1d2a17;
+        box-sizing: border-box;
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #121a10;
+          --fg: #e6efe0;
+        }
+      }
+      :root[data-theme="dark"] {
+        --bg: #121a10;
+        --fg: #e6efe0;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #w {
+        position: relative;
+        width: min(100vw, calc(100vh * 4 / 3));
+        aspect-ratio: 4/3;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        cursor: crosshair;
+        background: #6aa84f;
+      }
+      #ov {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: rgba(10, 25, 10, 0.82);
+        color: #fff;
+        text-align: center;
+        padding: 3%;
+        font-size: clamp(11px, 2vw, 17px);
+        line-height: 1.45;
+        overflow: auto;
+      }
+      #ov h1 {
+        margin: 0 0 0.4em;
+        font-size: 1.8em;
+      }
+      #ov p {
+        margin: 0.25em 0;
+        max-width: 42em;
+      }
+      button {
+        margin-top: 1em;
+        font-size: 1.2em;
+        padding: 0.5em 1.6em;
+        border: 0;
+        border-radius: 10px;
+        background: #f2c94c;
+        color: #222;
+        font-weight: 700;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="w">
+      <canvas id="c" width="800" height="600"></canvas>
+      <div id="ov"></div>
+    </div>
+    <script>
+      const W = 800,
+        H = 600,
+        cv = document.getElementById("c"),
+        ctx = cv.getContext("2d"),
+        ov = document.getElementById("ov");
+      const R = (a, b) => a + Math.random() * (b - a),
+        D = Math.PI / 180,
+        TP = Math.PI * 2,
+        dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+      const ad = (a, b) => {
+        let d = (a - b) % TP;
+        if (d > Math.PI) d -= TP;
+        if (d < -Math.PI) d += TP;
+        return d;
+      };
+      let AC;
+      function snd(f, d, t = "sine", v = 0.12, f2) {
+        try {
+          AC = AC || new AudioContext();
+          const o = AC.createOscillator(),
+            g = AC.createGain(),
+            n = AC.currentTime;
+          o.type = t;
+          o.frequency.setValueAtTime(f, n);
+          if (f2) o.frequency.linearRampToValueAtTime(f2, n + d);
+          g.gain.setValueAtTime(v, n);
+          g.gain.exponentialRampToValueAtTime(0.001, n + d);
+          o.connect(g);
+          g.connect(AC.destination);
+          o.start();
+          o.stop(n + d);
+        } catch (e) {}
+      }
+      let hi = 0;
+      try {
+        hi = +localStorage.getItem("pasterz_hi") || 0;
+      } catch (e) {}
+      const GOAL = 400;
+      let S = "menu",
+        G = null,
+        mouse = { x: 400, y: 300 },
+        keys = {};
+
+      function newSheep(x, y) {
+        G.sheep.push({ x, y, a: R(0, TP), st: "s", t: R(1, 4), sp: R(28, 38), fl: 0, fm: 1, da: 0 });
+      }
+      function pick(s) {
+        const inw = Math.atan2(s.y - H / 2, s.x - W / 2) + Math.PI;
+        let d;
+        do {
+          d = R(0, TP);
+        } while (Math.abs(ad(d, inw)) < 20 * D);
+        s.a = d;
+      }
+      function mv(o, a, l) {
+        o.x += Math.cos(a) * l;
+        o.y += Math.sin(a) * l;
+      }
+      function edgePt() {
+        const k = Math.floor(R(0, 4));
+        return k == 0
+          ? { x: 0, y: R(0, H) }
+          : k == 1
+            ? { x: W, y: R(0, H) }
+            : k == 2
+              ? { x: R(0, W), y: 0 }
+              : { x: R(0, W), y: H };
+      }
+      function edgeDir(o) {
+        const m = Math.min(o.x, W - o.x, o.y, H - o.y);
+        return m == o.x ? Math.PI : m == W - o.x ? 0 : m == o.y ? -Math.PI / 2 : Math.PI / 2;
+      }
+      function init() {
+        G = {
+          sheep: [],
+          wolves: [],
+          mounds: [],
+          bf: [],
+          herbs: [],
+          fx: [],
+          pt: 0,
+          time: 90,
+          lost: 0,
+          tick: 0,
+          sh: { x: W / 2 + 90, y: H / 2, f: 0 },
+          dash: 0,
+          dashCd: 0,
+          stoneCd: 0,
+          sCd: 0,
+          sDown: false,
+          sHold: 0,
+          loud: false,
+          carry: false,
+          wolfT: 8,
+          moundT: 6,
+          bfT: 12,
+          herbT: 7,
+          caught: 0,
+        };
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * TP;
+          newSheep(W / 2 + Math.cos(a) * 55, H / 2 + Math.sin(a) * 55);
+        }
+      }
+      function scare(r, m, dur) {
+        const sh = G.sh;
+        G.sheep.forEach((s) => {
+          if (dist(s, sh) < r) {
+            s.fl = dur;
+            s.fm = m;
+            s.da = Math.atan2(s.y - sh.y, s.x - sh.x);
+            s.a = s.da;
+          }
+        });
+        G.fx.push({ x: sh.x, y: sh.y, t: 0.4, T: 0.4, r });
+      }
+      function scareWolf(w) {
+        if (w.c) {
+          newSheep(w.x, w.y);
+          w.c = false;
+        }
+        w.st = "flee";
+        w.ea = edgeDir(w);
+        G.pt += 25;
+        G.caught++;
+        snd(600, 0.25, "square", 0.1, 200);
+      }
+
+      function update(dt) {
+        const g = G,
+          sh = g.sh;
+        g.time -= dt;
+        g.tick += dt;
+        if (g.tick >= 1) {
+          g.tick -= 1;
+          g.pt += g.sheep.length;
+        }
+        g.dash -= dt;
+        g.dashCd -= dt;
+        g.stoneCd -= dt;
+        g.sCd -= dt;
+        const slow = g.mounds.some((m) => dist(m, sh) < 24),
+          sp = 170 * (g.dash > 0 ? 2.2 : 1) * (slow ? 0.4 : 1);
+        const dx = mouse.x - sh.x,
+          dy = mouse.y - sh.y,
+          d = Math.hypot(dx, dy);
+        if (d > 5) {
+          const s = Math.min(d, sp * dt);
+          sh.x += (dx / d) * s;
+          sh.y += (dy / d) * s;
+          sh.f = Math.atan2(dy, dx);
+        }
+        if (g.sDown) {
+          g.sHold += dt;
+          if (g.sHold >= 1 && !g.loud) {
+            g.loud = true;
+            scare(330, 2.6, R(2, 4));
+            snd(300, 0.5, "sawtooth", 0.15, 150);
+          }
+        }
+        let near = null,
+          nd = 55;
+        g.mounds.forEach((m) => {
+          const q = dist(m, sh);
+          if (q < nd) {
+            nd = q;
+            near = m;
+          }
+        });
+        g.mounds.forEach((m) => {
+          if (m === near && keys.KeyA) m.p += dt;
+          else m.p = Math.max(0, m.p - dt);
+        });
+        g.mounds = g.mounds.filter((m) => {
+          if (m.p >= 5) {
+            g.pt += 20;
+            snd(520, 0.2, "triangle");
+            return false;
+          }
+          return true;
+        });
+        if ((g.moundT -= dt) <= 0) {
+          g.moundT = R(8, 14);
+          if (g.mounds.length < 6) g.mounds.push({ x: R(50, W - 50), y: R(70, H - 50), p: 0 });
+        }
+        if ((g.herbT -= dt) <= 0) {
+          g.herbT = R(14, 22);
+          if (!g.herbs.length && !g.carry) g.herbs.push({ x: R(60, W - 60), y: R(70, H - 60), l: 18 });
+        }
+        if ((g.bfT -= dt) <= 0) {
+          g.bfT = R(18, 28);
+          if (!g.bf.length) {
+            const e = edgePt();
+            g.bf.push({ x: e.x, y: e.y, a: Math.atan2(H / 2 - e.y, W / 2 - e.x) + R(-0.5, 0.5), t: 0, w: 0 });
+          }
+        }
+        if ((g.wolfT -= dt) <= 0) {
+          g.wolfT = R(14, 22);
+          if (!g.wolves.length) {
+            const e = edgePt();
+            g.wolves.push({ x: e.x, y: e.y, a: 0, st: "sneak", c: false, ea: 0 });
+          }
+        }
+        g.herbs.forEach((h) => (h.l -= dt));
+        g.herbs = g.herbs.filter((h) => h.l > 0);
+        g.bf = g.bf.filter((b) => {
+          b.t += dt;
+          b.w -= dt;
+          if (b.w <= 0) {
+            b.w = R(0.3, 0.9);
+            b.a += R(-1.2, 1.2);
+          }
+          mv(b, b.a, 95 * dt);
+          return b.x > -40 && b.x < W + 40 && b.y > -40 && b.y < H + 40;
+        });
+        g.fx.forEach((f) => (f.t -= dt));
+        g.fx = g.fx.filter((f) => f.t > 0);
+        g.sheep = g.sheep.filter((s) => {
+          if (s.fl > 0) {
+            s.fl -= dt;
+            s.a = s.da;
+            mv(s, s.da, s.sp * s.fm * dt);
+          } else if (g.carry && dist(s, sh) < 300) {
+            const a = Math.atan2(sh.y - s.y, sh.x - s.x);
+            s.a = a;
+            mv(s, a, 70 * dt);
+            if (dist(s, sh) < 24) {
+              g.carry = false;
+              g.pt += 15;
+              snd(700, 0.25, "triangle");
+            }
+          } else {
+            s.t -= dt;
+            if (s.st === "m") {
+              mv(s, s.a, s.sp * dt);
+              if (s.t <= 0) {
+                s.st = "s";
+                s.t = R(1, 4);
+              }
+            } else if (s.t <= 0) {
+              s.st = "m";
+              s.t = R(3, 5);
+              pick(s);
+            }
+          }
+          if (s.x < -8 || s.x > W + 8 || s.y < -8 || s.y > H + 8) {
+            g.pt -= 50;
+            g.lost++;
+            snd(180, 0.4, "sawtooth", 0.12, 90);
+            return false;
+          }
+          return true;
+        });
+        g.wolves = g.wolves.filter((w) => {
+          if (w.st !== "flee" && dist(w, sh) < 38) scareWolf(w);
+          if (w.st === "sneak") {
+            let t = null,
+              td = 1e9;
+            g.sheep.forEach((s) => {
+              const q = dist(s, w);
+              if (q < td) {
+                td = q;
+                t = s;
+              }
+            });
+            if (!t) {
+              w.st = "flee";
+              w.ea = edgeDir(w);
+            } else {
+              w.a = Math.atan2(t.y - w.y, t.x - w.x);
+              mv(w, w.a, 42 * dt);
+              if (td < 18) {
+                g.sheep.splice(g.sheep.indexOf(t), 1);
+                w.c = true;
+                w.st = "run";
+                w.ea = edgeDir(w);
+                snd(250, 0.3, "sawtooth", 0.1, 120);
+              }
+            }
+          } else if (w.st === "run") {
+            w.a = w.ea;
+            mv(w, w.a, 75 * dt);
+          } else {
+            w.a = w.ea;
+            mv(w, w.a, 130 * dt);
+          }
+          if (w.x < -30 || w.x > W + 30 || w.y < -30 || w.y > H + 30) {
+            if (w.c) {
+              g.pt -= 50;
+              g.lost++;
+              snd(160, 0.5, "sawtooth", 0.12, 70);
+            }
+            return false;
+          }
+          return true;
+        });
+      }
+
+      function rr(x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+      function tri(a, b, c, d, e, f, col) {
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(a, b);
+        ctx.lineTo(c, d);
+        ctx.lineTo(e, f);
+        ctx.closePath();
+        ctx.fill();
+      }
+      function txt(t, x, y, sz = 16, al = "left") {
+        ctx.font = "bold " + sz + "px system-ui,sans-serif";
+        ctx.textAlign = al;
+        ctx.fillStyle = "#000a";
+        ctx.fillText(t, x + 1, y + 1);
+        ctx.fillStyle = "#fff";
+        ctx.fillText(t, x, y);
+      }
+
+      function draw() {
+        const g = G;
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = "#6aa84f";
+        ctx.fillRect(0, 0, W, H);
+        g.mounds.forEach((m) => {
+          ctx.fillStyle = "#4a3320";
+          ctx.beginPath();
+          ctx.ellipse(m.x, m.y, 24, 17, 0, 0, TP);
+          ctx.fill();
+          ctx.fillStyle = "#6b4a2e";
+          ctx.beginPath();
+          ctx.ellipse(m.x, m.y - 3, 17, 11, 0, 0, TP);
+          ctx.fill();
+          if (m.p > 0) {
+            ctx.strokeStyle = "#ffe066";
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.arc(m.x, m.y - 28, 9, -Math.PI / 2, -Math.PI / 2 + (TP * m.p) / 5);
+            ctx.stroke();
+          }
+        });
+        g.herbs.forEach((h) => {
+          ctx.fillStyle = "#1f6b2a";
+          for (let i = 0; i < 5; i++) {
+            ctx.beginPath();
+            ctx.arc(h.x + Math.cos(i * 1.256) * 7, h.y + Math.sin(i * 1.256) * 7, 5, 0, TP);
+            ctx.fill();
+          }
+          ctx.fillStyle = "#c77dff";
+          ctx.beginPath();
+          ctx.arc(h.x, h.y, 4, 0, TP);
+          ctx.fill();
+        });
+        g.sheep.forEach((s) => {
+          ctx.save();
+          ctx.translate(s.x, s.y);
+          ctx.rotate(s.a);
+          ctx.fillStyle = "#fff";
+          ctx.strokeStyle = "#bbb";
+          ctx.lineWidth = 1.5;
+          rr(-15, -10, 30, 20, 8);
+          ctx.fill();
+          ctx.stroke();
+          ctx.strokeStyle = "#8a6d3b";
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(12, -9, 4, Math.PI * 1.2, Math.PI * 2.1);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(12, 9, 4, -Math.PI * 0.1, Math.PI * 0.8);
+          ctx.stroke();
+          ctx.fillStyle = "#111";
+          ctx.beginPath();
+          ctx.arc(11, -4, 2, 0, TP);
+          ctx.arc(11, 4, 2, 0, TP);
+          ctx.fill();
+          ctx.restore();
+        });
+        g.wolves.forEach((w) => {
+          ctx.save();
+          ctx.translate(w.x, w.y);
+          ctx.rotate(w.a);
+          ctx.fillStyle = "#555";
+          ctx.fillRect(-18, -8, 32, 16);
+          tri(-18, -4, -30, 0, -18, 4, "#000");
+          tri(14, -9, 30, 0, 14, 9, "#000");
+          if (w.c) {
+            ctx.fillStyle = "#fff";
+            rr(-12, -6, 20, 12, 5);
+            ctx.fill();
+          }
+          ctx.restore();
+        });
+        g.bf.forEach((b) => {
+          ctx.save();
+          ctx.translate(b.x, b.y);
+          ctx.rotate(b.a);
+          const f = Math.abs(Math.sin(b.t * 14)) * 9 + 2;
+          ctx.fillStyle = "#ff8c1a";
+          ctx.beginPath();
+          ctx.ellipse(0, -6, f, 6, 0, 0, TP);
+          ctx.ellipse(0, 6, f, 6, 0, 0, TP);
+          ctx.fill();
+          ctx.fillStyle = "#222";
+          ctx.fillRect(-5, -1.5, 10, 3);
+          ctx.restore();
+        });
+        const sh = g.sh;
+        ctx.save();
+        ctx.translate(sh.x, sh.y);
+        ctx.rotate(sh.f);
+        ctx.strokeStyle = "#7a4e1d";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-8, 13);
+        ctx.lineTo(34, 13);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(34, 17, 5, -Math.PI / 2, Math.PI / 2);
+        ctx.stroke();
+        ctx.fillStyle = "#999";
+        ctx.beginPath();
+        ctx.arc(0, 0, 12, 0, TP);
+        ctx.fill();
+        ctx.fillStyle = "#e0b48a";
+        ctx.beginPath();
+        ctx.arc(2, 12, 4, 0, TP);
+        ctx.fill();
+        tri(10, 0, -6, -9, -6, 9, "#8b5a2b");
+        ctx.restore();
+        if (g.carry) {
+          ctx.fillStyle = "#1f6b2a";
+          ctx.beginPath();
+          ctx.arc(sh.x + Math.cos(sh.f + 1.2) * 17, sh.y + Math.sin(sh.f + 1.2) * 17, 5, 0, TP);
+          ctx.fill();
+        }
+        if (g.sDown) {
+          ctx.fillStyle = "#0006";
+          ctx.fillRect(sh.x - 22, sh.y - 28, 44, 6);
+          ctx.fillStyle = g.sHold >= 1 ? "#ff5a36" : "#ffe066";
+          ctx.fillRect(sh.x - 22, sh.y - 28, 44 * Math.min(1, g.sHold), 6);
+        }
+        g.fx.forEach((f) => {
+          ctx.strokeStyle = "rgba(255,255,255," + f.t / f.T + ")";
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(f.x, f.y, f.r * (1 - f.t / f.T), 0, TP);
+          ctx.stroke();
+        });
+        ctx.fillStyle = "#0005";
+        ctx.fillRect(0, 0, W, 30);
+        txt("Punkty: " + Math.max(0, g.pt), 10, 21);
+        txt("Owce: " + g.sheep.length, 200, 21);
+        txt("Czas: " + Math.max(0, Math.ceil(g.time)), 330, 21);
+        txt("Rekord: " + hi, W - 10, 21, 16, "right");
+        ctx.fillStyle = "#0005";
+        ctx.fillRect(0, H - 26, W, 26);
+        txt(
+          "Dwuklik – skok: " +
+            (g.dashCd > 0 ? Math.ceil(g.dashCd) + "s" : "gotowy") +
+            "   PPM – kamień: " +
+            (g.stoneCd > 0 ? Math.ceil(g.stoneCd) + "s" : "gotowy") +
+            "   Ziele: " +
+            (g.carry ? "TAK" : "nie"),
+          10,
+          H - 8,
+          14
+        );
+      }
+
+      let last = 0;
+      function loop(t) {
+        const dt = Math.min(0.05, (t - last) / 1000 || 0);
+        last = t;
+        if (G) {
+          if (S === "play") {
+            update(dt);
+            if (G.time <= 0 || !G.sheep.length) end();
+          }
+          draw();
+        }
+        requestAnimationFrame(loop);
+      }
+      function menu() {
+        S = "menu";
+        init();
+        ov.style.display = "flex";
+        ov.innerHTML =
+          "<h1>Pasterz – poziom 1</h1><p>Pilnuj owiec na pastwisku! Owce wędrują losowo, a im bliżej krawędzi, tym większe ryzyko ucieczki. Owca, która opuści ekran, przepada (−50 pkt). Co sekundę dostajesz punkty za każdą owcę. Uważaj na wilka – skrada się do najbliższej owcy i próbuje z nią uciec.</p><p><b>Mysz:</b> pasterz idzie za kursorem · klik – łap motyla (+owca) i zbieraj ziele · dwuklik – krótki skok · prawy przycisk – rzuć kamień w wilka</p><p><b>Klawiatura:</b> S – odstrasz pobliskie owce (przytrzymaj 1 s – głośniej i dalej) · przytrzymaj A przy kopcu kreta 5 s – usuniesz go (kopce spowalniają)</p><p>Cel: zdobądź " +
+          GOAL +
+          " pkt, aby odblokować poziom 2. Gra trwa 90 s. Rekord: " +
+          hi +
+          '</p><button id="go">Poziom 1</button>';
+        document.getElementById("go").onclick = start;
+      }
+      function start() {
+        init();
+        S = "play";
+        ov.style.display = "none";
+        snd(440, 0.15, "triangle");
+      }
+      function end() {
+        S = "end";
+        const p = Math.max(0, G.pt);
+        let nw = p > hi;
+        if (nw) {
+          hi = p;
+          try {
+            localStorage.setItem("pasterz_hi", hi);
+          } catch (e) {}
+        }
+        ov.style.display = "flex";
+        ov.innerHTML =
+          "<h1>Koniec poziomu</h1><p>Punkty: <b>" +
+          p +
+          "</b>" +
+          (nw ? " – nowy rekord!" : "") +
+          "</p><p>Rekord: " +
+          hi +
+          "</p><p>Owce na pastwisku: " +
+          G.sheep.length +
+          " · utracone: " +
+          G.lost +
+          " · wilki odstraszone: " +
+          G.caught +
+          "</p><p>" +
+          (p >= GOAL
+            ? "Próg " + GOAL + " pkt osiągnięty – poziom 2 odblokowany (wkrótce)!"
+            : "Do odblokowania poziomu 2 brakuje " + (GOAL - p) + " pkt.") +
+          '</p><button id="go">Zagraj ponownie</button>';
+        document.getElementById("go").onclick = start;
+        snd(p >= GOAL ? 800 : 300, 0.5, "triangle", 0.12, p >= GOAL ? 1200 : 150);
+      }
+
+      function setM(e) {
+        const r = cv.getBoundingClientRect();
+        mouse.x = ((e.clientX - r.left) * W) / r.width;
+        mouse.y = ((e.clientY - r.top) * H) / r.height;
+      }
+      cv.addEventListener("mousemove", setM);
+      cv.addEventListener("click", (e) => {
+        setM(e);
+        if (S !== "play") return;
+        let hit = false;
+        G.bf = G.bf.filter((b) => {
+          if (!hit && dist(b, mouse) < 30) {
+            hit = true;
+            G.pt += 30;
+            newSheep(W / 2, H / 2);
+            snd(900, 0.3, "triangle", 0.12, 1300);
+            return false;
+          }
+          return true;
+        });
+        if (!hit && !G.carry)
+          G.herbs = G.herbs.filter((h) => {
+            if (!hit && dist(h, mouse) < 30 && dist(h, G.sh) < 70) {
+              hit = true;
+              G.carry = true;
+              snd(500, 0.15, "sine");
+              return false;
+            }
+            return true;
+          });
+      });
+      cv.addEventListener("dblclick", (e) => {
+        if (S === "play" && G.dashCd <= 0) {
+          G.dash = 0.8;
+          G.dashCd = 4;
+          snd(400, 0.3, "sine", 0.1, 800);
+        }
+      });
+      cv.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        setM(e);
+        if (S !== "play" || G.stoneCd > 0) return;
+        G.stoneCd = 3;
+        G.fx.push({ x: mouse.x, y: mouse.y, t: 0.4, T: 0.4, r: 80 });
+        snd(220, 0.15, "square", 0.1, 120);
+        G.wolves.forEach((w) => {
+          if (w.st !== "flee" && dist(w, mouse) < 80) scareWolf(w);
+        });
+      });
+      addEventListener("keydown", (e) => {
+        keys[e.code] = true;
+        if (e.code === "KeyS" && !e.repeat && S === "play") {
+          G.sDown = true;
+          G.sHold = 0;
+          G.loud = false;
+          if (G.sCd <= 0) {
+            scare(150, 1.8, R(1, 3));
+            G.sCd = 0.3;
+            snd(500, 0.15, "square", 0.08, 350);
+          }
+        }
+      });
+      addEventListener("keyup", (e) => {
+        keys[e.code] = false;
+        if (e.code === "KeyS" && G) G.sDown = false;
+      });
+      addEventListener("blur", () => {
+        keys = {};
+        if (G) G.sDown = false;
+      });
+      menu();
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
